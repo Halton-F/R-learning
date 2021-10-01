@@ -1,0 +1,505 @@
+```{r}
+library(tidyverse)
+library(tibbletime)
+tick <- c("AAPL", "SPY")
+df <- tick %>%
+  tidyquant::tq_get(get = "stock.prices", from = "2007-01-01") %>%
+  #get_value -> omit na -> manipulate data
+  stats::na.omit() %>%
+  dplyr::group_by(symbol)
+df
+
+```
+
+###Draw a plot with ggplot
+```{r} 
+
+#set title name
+# fig.title = "Look at the Data First"
+
+df %>% # df is the first argument for ggplot(data = ) 
+       #aes() is set for col the is sumbol
+       #col :color !!!!!!!!!!!!!!!!!!!!!!!!!!! not column
+  #1.input data
+  ggplot(aes(x = date, y = adjusted, col = symbol)) +
+  #2.select chart type 
+  geom_line() +
+  #3.set_titles labels
+  labs(title = "Asset Prices",
+       subtitle = "Why using adjusted prices? Is the data clean?")
+```
+
+###Computing Returns
+
+```{r} 
+
+df <- df %>% 
+  dplyr::mutate( #create the new column and return whole return
+  value = adjusted,
+  ret_abs = value - dplyr::lag(value), #offset elements by 1
+  ret_rel = (value / dplyr::lag(value)) - 1,
+  ret_log = log(value / dplyr::lag(value))
+) %>%
+  stats::na.omit()
+df
+
+```
+
+###Computing Moments
+```{r}
+library(moments)
+df %>% 
+  dplyr::summarise(
+  mean = mean(ret_rel),
+  stdv = sd(ret_rel),
+  # call the package to cal the 3rd and 4th moments
+  skew = moments::skewness(ret_rel),
+  kurt = moments::kurtosis(ret_rel)
+  ,groups = "keep" # "keep": Same grouping structure as .data.
+  
+)
+
+```
+
+Visualizing
+
+Note the following in your workflow:
+
+    geom_hist() tells us about the shape of the distribution.
+    geom_rug() informs on the tails.
+    xlim() coded for a symmetric chart, informing further about skewness and kurtosis.
+    When using facet_grid(), xlim() should be wrapped into coor_cartesian().
+    percent_format :Label percentages (2.5%, 50%, etc)
+
+```{r}
+library(scales)
+df %>% 
+  # What does fill mean here  ?[]
+  ggplot(aes(x = ret_rel, col = symbol, fill = symbol)) + 
+  geom_histogram(aes(y = stat(width*density)), bins = 200, show.legend = FALSE)+
+  geom_rug(col ="black") + 
+  facet_grid(symbol ~ .) +
+  coord_cartesian(xlim = c(-max(abs(df$ret_rel)),max(abs(df$ret_rel))))+
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))+
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1))+
+  labs(title = "Log Returns Density Histogram",
+       y = "Density", x = "Log Returns")
+```
+
+#Volatility
+##Non-Time Varying
+###Perils of Constant Volatility
+The standard deviation, σ
+, is the most common and inappropriate measure of volatility in real markets.
+It is constant throughout the period measured, and a key assumption in most statistical models.
+
+facet_grid(symbol ~.) display row by row
+facet_wrap(symbol ~.) display col by col
+```{r}
+df %>% 
+  group_by(symbol) %>%
+  mutate(mean = mean(ret_rel), sd = sd(ret_rel)) %>%
+  ggplot(aes(x = date, y = ret_rel, col = symbol)) +
+  geom_line(show.legend = TRUE)+
+  # facet_grid(symbol ~.)
+  facet_wrap(symbol ~.)+
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),alpha = 0.35, col = "blue")
+
+```
+
+#Commodities Behavior
+
+```{r}
+fig.title = "Daily Volatility with Standard Deviation Bands"
+df %>%
+  group_by(symbol) %>%
+  mutate(mean = mean(ret_rel), sd = sd(ret_rel)) %>%
+  ggplot(aes(x = date, y = ret_rel, col = symbol)) +
+  geom_line(show.legend = F) +
+  facet_wrap(symbol ~ .) +
+  geom_errorbar(aes(ymin = mean - sd , ymax = mean + sd),
+                alpha = 0.05,
+                col = "yellow") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(title = fig.title,
+       subtitle = "Perils of Constant Volatility Measures in Trading")
+```
+
+
+#6.5.2 Time-Varying
+
+    When a market exhibits non-constant, or time-varying volatility, it is referred to as in the presence of heteroskedasticity.
+    We will use the tibbletime package to apply statistics to time series within a tidy framework.
+    See the rollify function vignette for examples.
+
+    rollify():This function allows you to turn any function into a rolling version of itself.
+
+
+
+##Rolling StdDev
+```{r}
+fig.title = "Heteroskedasticity - Annualized Standard Deviations (sd20 and sd200)"
+library(tibbletime)
+# Define the rolling function using rollify()
+#turn the sd function into the rolling version
+fun_sd20 <- tibbletime::rollify(sd, window = 20)
+fun_sd200 <- tibbletime::rollify(sd, window = 200)
+
+
+df_roll <- df %>% 
+  tibbletime::as_tbl_time(index = date) %>% 
+  group_by(symbol) %>% 
+  mutate(sd20 = fun_sd20(ret_rel)*sqrt(252), sd200 = fun_sd200(ret_rel),sd200 = sd200(ret_rel) * sqrt(252)) %>% 
+  ungroup() %>% 
+  na.omit()
+# df_roll 
+
+#draw another line one the existing plot
+df_roll %>% 
+  ggplot(aes(x = date, y = sd20))+
+  geom_line(col = "blue")+
+  geom_line(aes(x = date, y = sd200), col = "red")+
+  facet_wrap(. ~ symbol, nrow = 1)+
+  scale_y_continuous(labels = percent) +
+  labs(
+    title = fig.title,
+    subtitle = "What would be the implications of using a single sd()?",
+    x = "time",
+    y = "variance"
+  )
+
+#   )
+```
+
+for information only - not for exam this is more advanced material.
+
+The Generalized Auto Regressive Conditional Heteroscedascity (“GARCH”) model is one of the most widely used in Finance.
+
+    It is an effective technique to measure non-constant volatility (heteroskedasticity).
+    Conditionality means that the value at time t
+
+
+
+```{r}
+library(RTL)
+fig.title = "Garch"
+df_stock <- df %>% 
+  dplyr::filter(symbol == "AAPL") %>% 
+  dplyr::ungroup() %>%
+  dplyr::select(date,ret_rel) %>% 
+  dplyr::rename(AAPL = ret_rel)
+# df_stock
+
+vol_garch <- RTL::garch(x = df_stock, out = "data")
+# vol_garch
+
+#the package from RTL to visulize garch
+#up chart represents Period return,
+#down chart represents garch
+RTL::garch(x = df_stock, out = "chart")
+
+```
+
+#Correlation
+```{r}
+# Converting our long data frame into a wide df
+df_roll2 <- df %>% dplyr::select(date, symbol, ret_rel) %>% 
+  # transfer long data into wide data
+  tidyr::pivot_wider(names_from = symbol, values_from = ret_rel)
+df_roll2  
+
+#> # A tibble: 3,710 × 3
+```
+#Rolling Correlation
+
+```{r}
+
+fig.title = "Static and Rolling Correlations (sd20 and sd200)"
+# Defining our function. Note the purrr notation given two input variables
+
+fun_cor20 <- tibbletime::rollify(~cor(.x, .y), window = 20)
+fun_cor200 <- tibbletime::rollify(~cor(.x, .y), window = 200)
+# df_roll2
+df_roll_cor <- df_roll2 %>%
+  dplyr::mutate(cor20 = fun_cor20(AAPL,SPY),
+                cor200 = fun_cor200(AAPL,SPY)
+                ) %>%
+  na.omit()
+# df_roll_cor
+#draw the plot on canvas
+df_roll_cor %>% ggplot(aes(x = date,y= cor20)) +
+  geom_line(col = "Blue")+
+  geom_line(aes(x = date, y = cor200), col = "RED")+
+  geom_line(aes(x = date, y = cor(AAPL,SPY)),col = "black")+
+  labs(title = fig.title, x = "years", y = "cor")
+
+
+
+```
+
+#Portfolio Management Example
+The PerformanceAnalytics package provides many very useful functions for portfolio management analysis. Note that it works with xts data.
+
+```{r}
+fig.title = "Correlations - PerformanceAnalytics"
+tick <- c("AAPL", "SPY", "GIS", "C", "GM", "XOM")
+df_example <- tick %>%
+  tidyquant::tq_get(get = "stock.prices", from = "2007-01-01") %>%
+  stats::na.omit() %>%
+  dplyr::mutate(value = adjusted,
+                ret_rel = (value / dplyr::lag(value)) - 1) %>%
+  dplyr::select(date, symbol, ret_rel) %>% na.omit()
+
+# df_example  
+df_example_wide <- df_example %>% 
+  tidyr::pivot_wider(names_from = symbol, values_from = ret_rel) %>% 
+  na.omit() %>% 
+  timetk::tk_xts(rename_index = "date")
+
+head(df)
+
+library(PerformanceAnalytics)
+PerformanceAnalytics::chart.Correlation(df.wide)
+```
+Tidy Version
+
+    Ggplot supports the development of extensions.
+    The purpose of extensions is to facilitate your workflow.
+    A key application will be in data exploration which we will review when we review ML/AI workflow.
+
+    The GGally package combines a few functions that are wrappers for quickly drawring data exploration tasks using tidy data.
+```{r}
+fig.title = "Correlations - GGally"
+library(GGally)
+df %>% 
+  tidyr::pivot_wider(names_from = symbol, values_from = ret_rel) %>%
+  dplyr::select(-date) %>% 
+  na.omit() %>%
+  GGally::ggpairs()
+```
+
+
+# 6.8 Normality Tests
+6.8.1 Jarque-Bera
+```{r}
+fig.title = "JB"
+library(tseries)
+#set.seed(1234)
+jarque.test(rnorm(100000))
+#> 
+#>  Jarque-Bera Normality Test
+#> 
+#> data:  rnorm(1e+05)
+#> JB = 0.84214, p-value = 0.6563
+#> alternative hypothesis: greater
+jarque.test(rlnorm(100000))
+#> 
+#>  Jarque-Bera Normality Test
+#> 
+#> data:  rlnorm(1e+05)
+#> JB = 31503167, p-value < 2.2e-16
+#> alternative hypothesis: greater
+df.ts <- df %>% dplyr::filter(symbol == "AAPL")
+tseries::jarque.bera.test(df.ts$ret_rel)
+#> 
+#>  Jarque Bera Test
+#> 
+#> data:  df.ts$ret_rel
+#> X-squared = 6068.6, df = 2, p-value < 2.2e-16
+```
+
+
+#6.8.1.2 DS Worflow
+```{r}
+library(broom)
+# with tseries
+df %>%
+  group_by(symbol) %>% 
+  dplyr::do(broom::tidy(tseries::jarque.bera.test(.$ret_rel)))
+#> # A tibble: 6 × 5
+#> # Groups:   symbol [6]
+#>   symbol   statistic p.value parameter method          
+#>   <chr>        <dbl>   <dbl>     <dbl> <chr>           
+#> 1 AAPL         6075.       0         2 Jarque Bera Test
+#> 2 C      1352952868.       0         2 Jarque Bera Test
+#> 3 GIS     311558584.       0         2 Jarque Bera Test
+#> 4 GM        3364462.       0         2 Jarque Bera Test
+#> 5 SPY        391787.       0         2 Jarque Bera Test
+#> 6 XOM         27914.       0         2 Jarque Bera Test
+# with moments
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(moments::jarque.test(.$ret_rel)))
+#> # A tibble: 6 × 5
+#> # Groups:   symbol [6]
+#>   symbol   statistic p.value method                     alternative
+#>   <chr>        <dbl>   <dbl> <chr>                      <chr>      
+#> 1 AAPL         6075.       0 Jarque-Bera Normality Test greater    
+#> 2 C      1352952868.       0 Jarque-Bera Normality Test greater    
+#> 3 GIS     311558584.       0 Jarque-Bera Normality Test greater    
+#> 4 GM        3364462.       0 Jarque-Bera Normality Test greater    
+#> 5 SPY        391787.       0 Jarque-Bera Normality Test greater    
+#> 6 XOM         27914.       0 Jarque-Bera Normality Test greater
+```
+
+#6.8.2 Kolmogorov-Smirnov (“KS”)
+
+    The KS test takes a slightly different approach by comparing two distributions, x = sample and y = target distribution.
+    It is a non-parametric test in the sense that the target distribution y
+
+    can be anything we feed to the model.
+    A high degree of significance, or low pvalue
+    , means that the distributions are not comparable
+```{r}
+# run the test with a normal dataset
+stats::ks.test(rnorm(10000), y = "pnorm")
+#> 
+#>  One-sample Kolmogorov-Smirnov test
+#> 
+#> data:  rnorm(10000)
+#> D = 0.0057875, p-value = 0.8911
+#> alternative hypothesis: two-sided
+```
+In our tests, the KS tests indicates that the returns do NOT approximate a normal distribution.
+```{r}
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(stats::ks.test(.$ret_rel, y = "pnorm")))
+#> # A tibble: 6 × 5
+#> # Groups:   symbol [6]
+#>   symbol statistic p.value method                             alternative
+#>   <chr>      <dbl>   <dbl> <chr>                              <chr>      
+#> 1 AAPL       0.468       0 One-sample Kolmogorov-Smirnov test two-sided  
+#> 2 C          0.456       0 One-sample Kolmogorov-Smirnov test two-sided  
+#> 3 GIS        0.480       0 One-sample Kolmogorov-Smirnov test two-sided  
+#> 4 GM         0.471       0 One-sample Kolmogorov-Smirnov test two-sided  
+#> 5 SPY        0.478       0 One-sample Kolmogorov-Smirnov test two-sided  
+#> 6 XOM        0.474       0 One-sample Kolmogorov-Smirnov test two-sided
+```
+
+ 6.8.3 Shapiro-Wilk
+
+    The Shapiro-Wilk is an earlier alternative method. See Wiki Shapiro-Wilk for a concise definition.
+    The null hypothesis is that the data comes from a normal distribution.
+    It is rejected if the pvalue<desired confidence value
+
+```{r}
+# run the test with a normal dataset with say a 10% chosen p-value
+stats::shapiro.test(rnorm(1000))
+#> 
+#>  Shapiro-Wilk normality test
+#> 
+#> data:  rnorm(1000)
+#> W = 0.99931, p-value = 0.9795
+stats::shapiro.test(rlnorm(1000))
+#> 
+#>  Shapiro-Wilk normality test
+#> 
+#> data:  rlnorm(1000)
+#> W = 0.54374, p-value < 2.2e-16
+```
+   In our tests, the tests indicates that the returns do NOT approximate a normal distribution.
+```{r}
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(stats::shapiro.test(.$ret_rel)))
+#> # A tibble: 6 × 4
+#> # Groups:   symbol [6]
+#>   symbol statistic  p.value method                     
+#>   <chr>      <dbl>    <dbl> <chr>                      
+#> 1 AAPL       0.935 1.52e-37 Shapiro-Wilk normality test
+#> 2 C          0.115 2.77e-85 Shapiro-Wilk normality test
+#> 3 GIS        0.409 1.34e-76 Shapiro-Wilk normality test
+#> 4 GM         0.747 7.58e-54 Shapiro-Wilk normality test
+#> 5 SPY        0.797 6.33e-56 Shapiro-Wilk normality test
+#> 6 XOM        0.876 1.73e-47 Shapiro-Wilk normality test
+```
+
+
+#6.9.1 Kwiatkowski-Phillips-Schmidt-Shin (“KPSS”)
+
+    The KPSS tests for the null hypothesis that x IS level or trend stationary.
+
+    We chose or reject based on our p.value confidence level. In this case assume 5%.
+        If the p-value is HIGHER than 5%, we ACCEPT the null hypothesis i.e. the series level or trend stationary.
+        If the p-value is LOWER than 5%, we REJECT the null hypothesis i.e. the series level or trend stationary.
+```{r}
+# let's explore it by looking at the function example
+x <- rnorm(1000)  # is level stationary
+kpss.test(x)
+#> 
+#>  KPSS Test for Level Stationarity
+#> 
+#> data:  x
+#> KPSS Level = 0.066393, Truncation lag parameter = 7, p-value = 0.1
+y <- cumsum(x)  # has unit root = not level stationary
+kpss.test(y)
+#> 
+#>  KPSS Test for Level Stationarity
+#> 
+#> data:  y
+#> KPSS Level = 11.998, Truncation lag parameter = 7, p-value = 0.01
+x <- 0.3*(1:1000)+rnorm(1000)  # is trend stationary
+kpss.test(x, null = "Trend")
+#> 
+#>  KPSS Test for Trend Stationarity
+#> 
+#> data:  x
+#> KPSS Trend = 0.05105, Truncation lag parameter = 7, p-value = 0.1
+```
+```{r}
+# Stationarity without trend - around a level
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(tseries::kpss.test(.$ret_rel, null = c("Level"))))
+#> # A tibble: 6 × 5
+#> # Groups:   symbol [6]
+#>   symbol statistic p.value parameter method                          
+#>   <chr>      <dbl>   <dbl>     <dbl> <chr>                           
+#> 1 AAPL      0.0638  0.1            9 KPSS Test for Level Stationarity
+#> 2 C         0.194   0.1            9 KPSS Test for Level Stationarity
+#> 3 GIS       0.214   0.1            9 KPSS Test for Level Stationarity
+#> 4 GM        0.296   0.1            9 KPSS Test for Level Stationarity
+#> 5 SPY       0.380   0.0859         9 KPSS Test for Level Stationarity
+#> 6 XOM       0.0326  0.1            9 KPSS Test for Level Stationarity
+# Stationarity around a deterministic trend
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(tseries::kpss.test(.$ret_rel, null = c("Trend"))))
+#> # A tibble: 6 × 5
+#> # Groups:   symbol [6]
+#>   symbol statistic p.value parameter method                          
+#>   <chr>      <dbl>   <dbl>     <dbl> <chr>                           
+#> 1 AAPL      0.0625   0.1           9 KPSS Test for Trend Stationarity
+#> 2 C         0.0963   0.1           9 KPSS Test for Trend Stationarity
+#> 3 GIS       0.119    0.100         9 KPSS Test for Trend Stationarity
+#> 4 GM        0.0793   0.1           9 KPSS Test for Trend Stationarity
+#> 5 SPY       0.0800   0.1           9 KPSS Test for Trend Stationarity
+#> 6 XOM       0.0332   0.1           9 KPSS Test for Trend Stationarity
+```
+
+
+# 6.9.2 Augmented Dickey-Fuller (“ADF”)
+
+    The ADF tests for the null hypothesis that x is NOT level or trend stationary.
+
+    We chose or reject based on our p.value confidence level. In this case assume 5%.
+        If the p-value is HIGHER than 5%, we ACCEPT the null hypothesis i.e. the series is NOT stationary.
+        If the p-value is LOWER than 5%, we REJECT the null hypothesis i.e. the series is stationary.
+```{r}
+df %>%
+  group_by(symbol) %>%
+  dplyr::do(broom::tidy(tseries::adf.test(.$ret_rel, alternative = c("stationary"))))
+#> # A tibble: 6 × 6
+#> # Groups:   symbol [6]
+#>   symbol statistic p.value parameter method                       alternative
+#>   <chr>      <dbl>   <dbl>     <dbl> <chr>                        <chr>      
+#> 1 AAPL       -13.9    0.01        15 Augmented Dickey-Fuller Test stationary 
+#> 2 C          -17.9    0.01        15 Augmented Dickey-Fuller Test stationary 
+#> 3 GIS        -16.4    0.01        15 Augmented Dickey-Fuller Test stationary 
+#> 4 GM         -13.1    0.01        13 Augmented Dickey-Fuller Test stationary 
+#> 5 SPY        -15.7    0.01        15 Augmented Dickey-Fuller Test stationary 
+#> 6 XOM        -15.2    0.01        15 Augmented Dickey-Fuller Test stationary
+```
+
+    
